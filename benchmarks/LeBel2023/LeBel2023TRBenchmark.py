@@ -299,7 +299,7 @@ class LeBel2023TRBenchmark:
         assembly = LeBel2023TRAssembly(
             subjects=[self.subject_id]
         )
-        story_fmri, ncsnr = assembly.get_assembly(
+        story_fmri, ceiling, ceiling_mask = assembly.get_assembly(
             story_names=stimulus_set.story_names
         )
 
@@ -367,7 +367,7 @@ class LeBel2023TRBenchmark:
         lang_mask = None
         region_mapper = None
 
-        # 5. Ridge regression (produces language mask)
+        # 5. Ridge regression
         if run_ridge:
             X = np.concatenate(all_features, axis=0)
             y = np.concatenate(all_fmri, axis=0)
@@ -379,93 +379,124 @@ class LeBel2023TRBenchmark:
 
             fold_scores = self._run_group_kfold(X, y, groups)
 
-            # Language mask from ridge predictions
             median_pearson = np.median(
                 fold_scores['pearson'], axis=0)
-            lang_mask = median_pearson > self.lang_mask_threshold
-            n_lang_voxels = np.sum(lang_mask)
-            print(f"Language mask: {n_lang_voxels}/{y.shape[1]} "
-                  f"voxels above r={self.lang_mask_threshold}")
+            median_r2 = np.median(fold_scores['r2'], axis=0)
+
+            # Apply ceiling filter to all scoring.
+            # ceiling_mask: voxels with reliable inter-subject
+            # agreement (ISC > 0.01). Excludes noise-floor voxels
+            # (~40% of whole-brain mask).
+            cm = ceiling_mask
+            n_cm = int(cm.sum())
+
+            # Intersect language mask with ceiling filter
+            lang_mask = (
+                (median_pearson > self.lang_mask_threshold) & cm)
+            n_lang_voxels = int(np.sum(lang_mask))
+            print(f"Ceiling filter: {n_cm}/{y.shape[1]} voxels")
+            print(f"Language mask: {n_lang_voxels} voxels "
+                  f"(r>{self.lang_mask_threshold} & ceiling)")
 
             ridge_key = ('torch_ridge' if 'torch_ridge' in self.metrics
                          else 'ridge')
+
+            ceil_vals = ceiling[cm]
             results[ridge_key] = {
                 'raw_pearson': fold_scores['pearson'],
                 'raw_r2': fold_scores['r2'],
                 'median_pearson_all': median_pearson,
-                'median_r2_all': np.median(
-                    fold_scores['r2'], axis=0),
-                'final_pearson_all': float(
-                    np.median(median_pearson)),
-                'final_r2_all': float(np.median(
-                    np.median(fold_scores['r2'], axis=0))),
+                'median_r2_all': median_r2,
+                'ceiling_mask': cm,
+                'n_ceiling_voxels': n_cm,
+                'final_pearson_unceiled': float(
+                    np.median(median_pearson[cm])),
+                'final_pearson_ceiled': float(
+                    np.median(median_pearson[cm] / ceil_vals)),
+                'final_r2_unceiled': float(
+                    np.median(median_r2[cm])),
+                'final_r2_ceiled': float(
+                    np.median(median_r2[cm] / ceil_vals)),
                 'lang_mask': lang_mask,
-                'n_lang_voxels': int(n_lang_voxels),
-                'median_pearson_lang': (
-                    median_pearson[lang_mask]
-                    if n_lang_voxels > 0 else np.array([])),
-                'final_pearson_lang': (
+                'n_lang_voxels': n_lang_voxels,
+                'final_pearson_lang_unceiled': (
                     float(np.median(median_pearson[lang_mask]))
                     if n_lang_voxels > 0 else 0.0),
-                'median_r2_lang': (
-                    np.median(
-                        fold_scores['r2'], axis=0)[lang_mask]
-                    if n_lang_voxels > 0 else np.array([])),
-                'final_r2_lang': (
-                    float(np.median(np.median(
-                        fold_scores['r2'], axis=0)[lang_mask]))
+                'final_pearson_lang_ceiled': (
+                    float(np.median(
+                        median_pearson[lang_mask]
+                        / ceiling[lang_mask]))
+                    if n_lang_voxels > 0 else 0.0),
+                'final_r2_lang_unceiled': (
+                    float(np.median(median_r2[lang_mask]))
+                    if n_lang_voxels > 0 else 0.0),
+                'final_r2_lang_ceiled': (
+                    float(np.median(
+                        median_r2[lang_mask]
+                        / ceiling[lang_mask]))
                     if n_lang_voxels > 0 else 0.0),
             }
-            print(f"Ridge - All voxels: Pearson="
-                  f"{results[ridge_key]['final_pearson_all']:.4f}, "
-                  f"R2={results[ridge_key]['final_r2_all']:.4f}")
+            r = results[ridge_key]
+            print(f"Ridge ({n_cm} voxels): "
+                  f"unceiled Pearson={r['final_pearson_unceiled']:.4f}, "
+                  f"ceiled={r['final_pearson_ceiled']:.4f}")
+            print(f"Ridge ({n_cm} voxels): "
+                  f"unceiled R2={r['final_r2_unceiled']:.4f}, "
+                  f"ceiled={r['final_r2_ceiled']:.4f}")
             if n_lang_voxels > 0:
                 print(
-                    f"Ridge - Lang voxels ({n_lang_voxels}): "
-                    f"Pearson="
-                    f"{results[ridge_key]['final_pearson_lang']:.4f}"
-                    f", R2="
-                    f"{results[ridge_key]['final_r2_lang']:.4f}")
+                    f"Ridge lang ({n_lang_voxels}): "
+                    f"unceiled Pearson="
+                    f"{r['final_pearson_lang_unceiled']:.4f}, "
+                    f"ceiled="
+                    f"{r['final_pearson_lang_ceiled']:.4f}")
 
             # --- Region-based scoring ---
+            # Scores for excluded voxels set to NaN so RegionMapper
+            # only aggregates ceiling-filtered voxels.
             try:
                 fs_labels = LeBel2023FreeSurferLabels()
                 label_dir = fs_labels.ensure_downloaded(
                     self.subject_id)
                 region_mapper = RegionMapper(label_dir)
 
-                median_r2 = np.median(
-                    fold_scores['r2'], axis=0)
+                mp_masked = median_pearson.copy()
+                mr2_masked = median_r2.copy()
+                mp_masked[~cm] = np.nan
+                mr2_masked[~cm] = np.nan
                 region_scores = region_mapper.aggregate_scores(
-                    median_pearson, median_r2)
+                    mp_masked, mr2_masked)
                 results[ridge_key]['regions'] = region_scores
 
-                # Anatomical language mask (replaces functional)
+                # Anatomical language mask intersected with ceiling
                 anat_lang_idx = region_mapper.get_language_indices()
                 n_voxels = y.shape[1]
                 anat_lang_mask = np.zeros(n_voxels, dtype=bool)
                 valid_idx = anat_lang_idx[
                     anat_lang_idx < n_voxels]
                 anat_lang_mask[valid_idx] = True
+                anat_lang_mask &= cm
 
-                # Keep old functional mask for backward compat
                 results[ridge_key]['lang_mask_functional'] = lang_mask
-                # Replace default with anatomical
                 lang_mask = anat_lang_mask
                 results[ridge_key]['lang_mask'] = lang_mask
                 n_lang_voxels = int(np.sum(lang_mask))
                 results[ridge_key]['n_lang_voxels'] = n_lang_voxels
-                results[ridge_key]['median_pearson_lang'] = (
-                    median_pearson[lang_mask]
-                    if n_lang_voxels > 0 else np.array([]))
-                results[ridge_key]['final_pearson_lang'] = (
+                results[ridge_key]['final_pearson_lang_unceiled'] = (
                     float(np.median(median_pearson[lang_mask]))
                     if n_lang_voxels > 0 else 0.0)
-                results[ridge_key]['median_r2_lang'] = (
-                    median_r2[lang_mask]
-                    if n_lang_voxels > 0 else np.array([]))
-                results[ridge_key]['final_r2_lang'] = (
+                results[ridge_key]['final_pearson_lang_ceiled'] = (
+                    float(np.median(
+                        median_pearson[lang_mask]
+                        / ceiling[lang_mask]))
+                    if n_lang_voxels > 0 else 0.0)
+                results[ridge_key]['final_r2_lang_unceiled'] = (
                     float(np.median(median_r2[lang_mask]))
+                    if n_lang_voxels > 0 else 0.0)
+                results[ridge_key]['final_r2_lang_ceiled'] = (
+                    float(np.median(
+                        median_r2[lang_mask]
+                        / ceiling[lang_mask]))
                     if n_lang_voxels > 0 else 0.0)
 
                 lang_grp = region_scores['per_group'].get(
@@ -533,12 +564,16 @@ class LeBel2023TRBenchmark:
             f"{benchmark_name}.pkl"
         )
 
-        merged = {"metrics": results, "ceiling": ncsnr}
+        merged = {
+            "metrics": results,
+            "ceiling": ceiling,
+            "ceiling_mask": ceiling_mask,
+        }
         with open(results_file, 'wb') as f:
             pickle.dump(merged, f)
         print(f"Results saved to {results_file}")
 
-        return {'metrics': results, 'ceiling': ncsnr}
+        return merged
 
     def _run_group_kfold(self, X, y, groups):
         """

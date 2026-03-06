@@ -272,10 +272,37 @@ class LeBel2023Assembly(BaseDataset):
 
         print(f"DEBUG: Final fmri_data shape: {fmri_data.shape}")
 
-        # Fake ceiling
-        ncsnr = np.ones(fmri_data.shape[1], dtype=np.float32)
+        # Noise ceiling: per-voxel leave-one-out inter-subject correlation.
+        # Precomputed by compute_ceiling.py using all 9 subjects (UTS01-UTS09).
+        # For each subject S, each story, each voxel:
+        #   ceiling = pearson_r(S_timeseries, mean(other_subjects)_timeseries)
+        # Then median across stories -> (81126,) per subject.
+        # Falls back to np.ones if ceiling file not found or subject missing.
+        n_voxels = fmri_data.shape[1]
+        ncsnr = self._load_ceiling(n_voxels)
 
         return fmri_data, ncsnr
+
+    def _load_ceiling(self, n_voxels):
+        """Load precomputed per-voxel noise ceiling for the requested subject."""
+        ceiling_path = os.path.join(
+            os.path.dirname(__file__), "lebel2023_ceiling.npz")
+        if not os.path.exists(ceiling_path):
+            print("Warning: Ceiling file not found, using placeholder ceiling=1.0")
+            return np.ones(n_voxels, dtype=np.float32)
+
+        data = np.load(ceiling_path, allow_pickle=True)
+        subj = self.subjects[0]
+        if subj in data:
+            ceiling = data[subj].astype(np.float32)
+            ceiling = np.clip(ceiling, 1e-3, None)
+            print(f"Loaded noise ceiling for {subj}: "
+                  f"median={np.median(ceiling):.4f}, "
+                  f"mean={np.mean(ceiling):.4f}")
+            return ceiling
+        else:
+            print(f"Warning: No ceiling for {subj}, using placeholder ceiling=1.0")
+            return np.ones(n_voxels, dtype=np.float32)
 
     def __len__(self):
         # Placeholder or compute
@@ -503,7 +530,7 @@ class LeBel2023TRAssembly(BaseDataset):
 
     def get_assembly(
         self, story_names: Optional[List[str]] = None
-    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
         """
         Load per-story fMRI time series.
 
@@ -512,7 +539,8 @@ class LeBel2023TRAssembly(BaseDataset):
 
         Returns:
             story_data: dict mapping story_name -> (n_TRs, n_voxels)
-            ncsnr: (n_voxels,) placeholder noise ceiling
+            ceiling: (n_voxels,) per-voxel noise ceiling
+            ceiling_mask: (n_voxels,) bool — voxels with reliable ceiling
         """
         # Accumulate per-story data across subjects
         # For multiple subjects: concatenate along voxel axis
@@ -572,13 +600,56 @@ class LeBel2023TRAssembly(BaseDataset):
 
         # Determine voxel count from first story
         n_voxels = next(iter(story_data.values())).shape[1]
-        ncsnr = np.ones(n_voxels, dtype=np.float32)
+
+        # Noise ceiling: leave-one-out inter-subject correlation (ISC).
+        # Precomputed by compute_ceiling.py using all 9 subjects in volume
+        # space. For subject S, each story, each voxel:
+        #   ceiling = pearson_r(S, mean(others)) across TRs
+        # Then median across stories. Voxels with ceiling <= 0.01 are
+        # excluded (below noise floor).
+        ceiling, ceiling_mask = self._load_ceiling(n_voxels)
 
         total_trs = sum(v.shape[0] for v in story_data.values())
         print(f"Loaded {len(story_data)} stories, "
               f"{total_trs} total TRs, {n_voxels} voxels.")
 
-        return story_data, ncsnr
+        return story_data, ceiling, ceiling_mask
+
+    def _load_ceiling(self, n_voxels):
+        """Load precomputed per-voxel noise ceiling and validity mask."""
+        ceiling_path = os.path.join(
+            os.path.dirname(__file__), "lebel2023_ceiling.npz")
+        subj = self.subjects[0]
+        CEILING_THRESHOLD = 0.01
+
+        if not os.path.exists(ceiling_path):
+            print("Warning: Ceiling file not found, "
+                  "using placeholder ceiling=1.0")
+            return (np.ones(n_voxels, dtype=np.float32),
+                    np.ones(n_voxels, dtype=bool))
+
+        data = np.load(ceiling_path, allow_pickle=True)
+        if subj not in data:
+            print(f"Warning: No ceiling for {subj}, "
+                  "using placeholder ceiling=1.0")
+            return (np.ones(n_voxels, dtype=np.float32),
+                    np.ones(n_voxels, dtype=bool))
+
+        ceiling = data[subj].astype(np.float32)
+        valid_key = f'{subj}_valid'
+        valid = (data[valid_key] if valid_key in data
+                 else np.ones(len(ceiling), dtype=bool))
+
+        # Combined mask: validity filter AND ceiling above noise floor
+        ceiling_mask = valid & (ceiling > CEILING_THRESHOLD)
+        n_kept = ceiling_mask.sum()
+        print(f"Noise ceiling for {subj}: "
+              f"median={np.median(ceiling[ceiling_mask]):.4f}, "
+              f"{n_kept}/{len(ceiling)} voxels above threshold "
+              f"({100 * n_kept / len(ceiling):.1f}%)")
+
+        ceiling = np.clip(ceiling, 1e-3, None)
+        return ceiling, ceiling_mask
 
     def __len__(self):
         return 27
@@ -1056,11 +1127,17 @@ class RegionMapper:
             if len(indices) == 0:
                 return {'median_pearson': 0.0, 'median_r2': 0.0,
                         'n_voxels': 0}
+            p = per_voxel_pearson[indices]
+            r = per_voxel_r2[indices]
+            valid = ~(np.isnan(p) | np.isnan(r))
+            n_valid = int(valid.sum())
+            if n_valid == 0:
+                return {'median_pearson': 0.0, 'median_r2': 0.0,
+                        'n_voxels': 0}
             return {
-                'median_pearson': float(np.median(
-                    per_voxel_pearson[indices])),
-                'median_r2': float(np.median(per_voxel_r2[indices])),
-                'n_voxels': int(len(indices)),
+                'median_pearson': float(np.median(p[valid])),
+                'median_r2': float(np.median(r[valid])),
+                'n_voxels': n_valid,
             }
 
         # Per individual region (both hemispheres)
