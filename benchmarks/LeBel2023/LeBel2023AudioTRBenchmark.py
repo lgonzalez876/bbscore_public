@@ -1,3 +1,31 @@
+"""
+LeBel2023 TR-level benchmark for audio stimuli.
+
+Noise ceiling
+-------------
+Per-voxel noise ceiling is precomputed via leave-one-out inter-subject
+correlation (ISC) across all 9 subjects (UTS01-UTS09) in native volume
+space (see compute_ceiling.py). For each target subject S:
+
+  1. Each subject's mask_thick.nii.gz defines cortical voxels in volume
+     space. Voxel positions are converted to world coordinates (mm) via
+     the NIfTI affine.
+  2. A KD-tree nearest-neighbor mapping aligns other subjects' voxels
+     to S's voxel grid (max distance 5 mm).
+  3. For each story, other subjects' fMRI is resampled to S's space and
+     averaged. Per-voxel Pearson r(S, mean_others) is computed across TRs.
+  4. Median across stories gives one ceiling value per voxel.
+
+A voxel passes the ceiling filter if:
+  - At least 2 other subjects have a voxel within 5 mm (validity mask)
+  - Its ceiling value exceeds 0.01 (above the noise floor)
+
+This retains ~60% of whole-brain voxels. All scoring (ridge Pearson/R2,
+language mask, region aggregation) uses only ceiling-filtered voxels.
+Both unceiled and ceiled (score / ceiling) values are reported.
+
+The precomputed ceiling is stored in data/lebel2023_ceiling.npz.
+"""
 import os
 import pickle
 import datetime
