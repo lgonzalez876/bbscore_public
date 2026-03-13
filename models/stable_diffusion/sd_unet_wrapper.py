@@ -20,7 +20,7 @@ class SDUNetWrapper(nn.Module):
         from diffusers import StableDiffusionPipeline
 
         pipe = StableDiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-2-1",
+            "sd2-community/stable-diffusion-2-1",
             torch_dtype=torch.float16,
             safety_checker=None,
         )
