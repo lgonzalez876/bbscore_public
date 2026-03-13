@@ -72,7 +72,10 @@ class StableDiffusion:
         return self.model
 
     def postprocess_fn(self, features):
-        """Pool spatial dims: (B, C, H, W) -> (B, C) via global average pooling."""
+        """Pool spatial dims: (B, [1,] C, H, W) -> (B, C) via global average pooling."""
+        # _process_sequence_features may insert a singleton dim via torch.stack
+        if features.ndim == 5 and features.shape[1] == 1:
+            features = features.squeeze(1)
         if features.ndim == 4:
             return torch.nn.functional.adaptive_avg_pool2d(
                 features, (1, 1)
