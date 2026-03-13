@@ -113,7 +113,14 @@ class FeatureExtractor:
         def hook_fn_factory(layer_id):
             """Creates a hook specific to a layer name."""
             def hook_fn(module, input, output):
-                self.features[layer_id].append(output)
+                # Handle HuggingFace/diffusers model outputs (dataclasses)
+                if hasattr(output, 'sample'):
+                    output = output.sample
+                elif hasattr(output, 'last_hidden_state'):
+                    output = output.last_hidden_state
+                elif isinstance(output, tuple):
+                    output = output[0]
+                self.features[layer_id].append(output.detach())
             return hook_fn
 
         for l_name in self.layer_names:
@@ -419,6 +426,10 @@ class FeatureExtractor:
                     return processed
                 batch_labels = _process_labels(labels)
                 all_labels.extend(batch_labels)
+
+            # Free GPU cache after each batch to reduce fragmentation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         try:
             dataloader = DataLoader(
