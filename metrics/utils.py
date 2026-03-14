@@ -42,6 +42,22 @@ def run_kfold_cv(
     random_state: int = 42,
     stratify_on: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
+    import psutil, os
+    proc = psutil.Process(os.getpid())
+
+    rss = proc.memory_info().rss / 2**30
+    avail = psutil.virtual_memory().available / 2**30
+    total = psutil.virtual_memory().total / 2**30
+    print(f"[MEM] run_kfold_cv START: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
+    print(f"  X: shape={X.shape}, dtype={X.dtype}, size={X.nbytes / 2**20:.1f} MB")
+    print(f"  y: shape={y.shape}, dtype={y.dtype}, size={y.nbytes / 2**20:.1f} MB")
+
+    # Estimate RidgeCV cv_results_ size (if applicable)
+    n_train_fold = int(X.shape[0] * (1 - 1/n_splits))
+    n_targets = y.shape[1] if y.ndim > 1 else 1
+    cv_est = n_train_fold * 21 * n_targets * 8  # 21 alphas, float64
+    print(f"  Estimated RidgeCV cv_results_ per fold: {cv_est / 2**30:.2f} GB "
+          f"({n_train_fold} samples x 21 alphas x {n_targets} targets x 8 bytes)")
 
     if stratify_on is not None:
         if len(stratify_on) != X.shape[0]:
@@ -61,13 +77,31 @@ def run_kfold_cv(
     # scores['gt'] = []
 
     # Wrap the fold loop with tqdm progress bar
-    for train_idx, val_idx in tqdm(split_iterator, total=n_splits, desc="Folds"):
+    for fold_idx, (train_idx, val_idx) in enumerate(tqdm(split_iterator, total=n_splits, desc="Folds")):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
+
+        if fold_idx == 0:
+            rss = proc.memory_info().rss / 2**30
+            avail = psutil.virtual_memory().available / 2**30
+            print(f"[MEM] Fold 0 before model.fit: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
+            print(f"  X_train: {X_train.shape}, y_train: {y_train.shape}")
 
         model = model_factory()
         if model is not None:  # for metrics like onetoone that don't use any model
             model.fit(X_train, y_train)
+
+            if fold_idx == 0:
+                rss = proc.memory_info().rss / 2**30
+                avail = psutil.virtual_memory().available / 2**30
+                print(f"[MEM] Fold 0 after model.fit: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
+                if hasattr(model, 'cv_results_'):
+                    print(f"  cv_results_: shape={model.cv_results_.shape}, "
+                          f"size={model.cv_results_.nbytes / 2**30:.2f} GB")
+                if hasattr(model, 'coef_'):
+                    print(f"  coef_: shape={model.coef_.shape}, "
+                          f"size={model.coef_.nbytes / 2**20:.1f} MB")
+
             fold_preds = model.predict(X_val)
             # If fold_preds is a torch.Tensor, convert to numpy array
             if hasattr(fold_preds, 'cpu'):
@@ -88,6 +122,14 @@ def run_kfold_cv(
                 scores[name].append(fold_score)
             else:
                 scores[name].append(np.array(scoring_func(y_val, fold_preds)))
+
+        # Free model after each fold to avoid accumulation
+        del model
+        if fold_idx == 0:
+            gc.collect()
+            rss = proc.memory_info().rss / 2**30
+            avail = psutil.virtual_memory().available / 2**30
+            print(f"[MEM] Fold 0 after cleanup: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
 
     return {name: np.array(score_list, dtype=object) for name, score_list in scores.items()}
 

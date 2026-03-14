@@ -1,3 +1,4 @@
+import gc
 import gdown
 import numpy as np
 import os
@@ -189,6 +190,15 @@ class NSDAssembly(BaseDataset):
                 )
         self.data[subj] = np.load(output, allow_pickle=True)
 
+    def _log_mem(self, label):
+        """Log RSS and available memory at a given point."""
+        import psutil, os
+        proc = psutil.Process(os.getpid())
+        rss = proc.memory_info().rss / 2**30
+        avail = psutil.virtual_memory().available / 2**30
+        total = psutil.virtual_memory().total / 2**30
+        print(f"  [MEM] {label}: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
+
     def _get_metadata_concat_hemi(self, Y: Dict) -> Tuple[np.ndarray, pd.DataFrame]:
         """Concatenate metadata and return ncsnr/metadata."""
         ncsnr_full = np.concatenate(
@@ -318,42 +328,68 @@ class NSDAssembly(BaseDataset):
 
         all_responses = []
         all_ncsnr = []
+        self._log_mem("prepare_data START")
 
         for subj in self.subjects:
             if subj not in self.data:
                 self._download_nsd_data(subj)
+            self._log_mem(f"{subj} pickle loaded")
 
-            Y = self.data[subj]
-            ncsnr_nsdgeneral, nsdgeneral_metadata_df = (
-                self._get_metadata_concat_hemi(Y)
-            )
+            Y = self.data.pop(subj)
+
+            # Log pickle structure sizes
+            for top_key in Y:
+                obj = Y[top_key]
+                if isinstance(obj, dict):
+                    for k2, v2 in obj.items():
+                        if isinstance(v2, dict):
+                            for k3, v3 in v2.items():
+                                if hasattr(v3, 'nbytes'):
+                                    print(f"    Y['{top_key}']['{k2}']['{k3}']: shape={v3.shape}, "
+                                          f"dtype={v3.dtype}, size={v3.nbytes / 2**30:.2f} GB")
+                        elif hasattr(v2, 'nbytes'):
+                            print(f"    Y['{top_key}']['{k2}']: shape={v2.shape}, "
+                                  f"dtype={v2.dtype}, size={v2.nbytes / 2**30:.2f} GB")
+
+            # Extract only what we need (direct references to nested arrays)
+            brain_test_lh = Y['brain_data']['test']['lh']
+            brain_test_rh = Y['brain_data']['test']['rh']
+            ncsnr_nsdgeneral, nsdgeneral_metadata_df = self._get_metadata_concat_hemi(Y)
+
+            # Delete the full pickle — frees image_data, brain_data['train'], etc.
+            del Y
+            gc.collect()
+            self._log_mem(f"{subj} after del Y + gc.collect")
 
             test_brain_data_cat = np.concatenate(
-                (
-                    Y['brain_data']['test']['lh'],
-                    Y['brain_data']['test']['rh'],
-                ),
-                axis=2,
+                (brain_test_lh, brain_test_rh), axis=2,
             )
-            del self.data[subj]
-            del Y  # release last reference to pickle
+            del brain_test_lh, brain_test_rh
 
             test_brain_data_cat = np.mean(test_brain_data_cat, axis=1)
+            print(f"    test_brain_data_cat: shape={test_brain_data_cat.shape}, "
+                  f"dtype={test_brain_data_cat.dtype}, "
+                  f"size={test_brain_data_cat.nbytes / 2**20:.1f} MB")
 
             subj_test_fmri_data, subj_test_ncsnr = self._get_data_dict(
-                test_brain_data_cat,
-                ncsnr_nsdgeneral,
-                nsdgeneral_metadata_df,
-                regions,
+                test_brain_data_cat, ncsnr_nsdgeneral,
+                nsdgeneral_metadata_df, regions,
             )
-            del test_brain_data_cat
+            del test_brain_data_cat, ncsnr_nsdgeneral, nsdgeneral_metadata_df
+            gc.collect()
+            self._log_mem(f"{subj} after region extraction + gc.collect")
 
+            print(f"    subj data: shape={subj_test_fmri_data.shape}, "
+                  f"size={subj_test_fmri_data.nbytes / 2**20:.1f} MB")
             all_responses.append(subj_test_fmri_data)
             all_ncsnr.append(subj_test_ncsnr)
 
         self.test_fmri_data = np.concatenate(all_responses, axis=1)
         self.ncsnr_data = np.concatenate(all_ncsnr, axis=0)
-        # self.ncsnr_data = (np.power(self.ncsnr_data,2) / (np.power(self.ncsnr_data,2) + 1/3))
+        self._log_mem("prepare_data END")
+        print(f"  Final assembly: shape={self.test_fmri_data.shape}, "
+              f"dtype={self.test_fmri_data.dtype}, "
+              f"size={self.test_fmri_data.nbytes / 2**20:.1f} MB")
 
     def get_assembly(self):
         """
