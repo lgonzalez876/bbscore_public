@@ -336,6 +336,7 @@ class NSDAssembly(BaseDataset):
                 axis=2,
             )
             del self.data[subj]
+            del Y  # release last reference to pickle
 
             test_brain_data_cat = np.mean(test_brain_data_cat, axis=1)
 
