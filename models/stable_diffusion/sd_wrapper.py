@@ -73,13 +73,26 @@ class StableDiffusion:
 
     def postprocess_fn(self, features):
         """Pool spatial dims: (B, [1,] C, H, W) -> (B, C) via global average pooling."""
+        print(f"  [POSTPROCESS] input: ndim={features.ndim}, shape={features.shape}, dtype={features.dtype}")
+
         # _process_sequence_features may insert a singleton dim via torch.stack
         if features.ndim == 5 and features.shape[1] == 1:
             features = features.squeeze(1)
         if features.ndim == 4:
-            return torch.nn.functional.adaptive_avg_pool2d(
+            features = torch.nn.functional.adaptive_avg_pool2d(
                 features, (1, 1)
             ).flatten(1)
         elif features.ndim == 3:
-            return features.reshape(features.shape[0], -1)
+            features = features.reshape(features.shape[0], -1)
+
+        # Safety net: if still > 2D after above checks, force pool
+        if features.ndim > 2:
+            print(f"  [POSTPROCESS] WARNING: still {features.ndim}D after standard pooling, "
+                  f"shape={features.shape}. Force-pooling last 2 dims.")
+            features = torch.nn.functional.adaptive_avg_pool2d(
+                features.flatten(0, -3),  # merge batch+extra dims
+                (1, 1)
+            ).flatten(1)
+
+        print(f"  [POSTPROCESS] output: ndim={features.ndim}, shape={features.shape}")
         return features

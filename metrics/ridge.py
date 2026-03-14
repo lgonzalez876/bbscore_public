@@ -112,6 +112,13 @@ class RidgeMetric(BaseMetric):
                 N_test = test_source.shape[0]
                 test_source = test_source.reshape(N_test, -1)
 
+        # Warn if features are suspiciously large (likely missing spatial pooling)
+        if source.shape[1] > 100_000:
+            est_float64_gb = source.shape[0] * source.shape[1] * 8 / 2**30
+            print(f"  [WARNING] Features have {source.shape[1]} dims — likely missing spatial pooling. "
+                  f"RidgeCV will upcast to float64: ~{est_float64_gb:.1f} GB. "
+                  f"Consider using postprocess_fn with adaptive_avg_pool2d.")
+
         if self.mode == "sklearn":
             # Check if we should use subsampled alpha search
             if (self.subsample_features_for_alpha is not None and

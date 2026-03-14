@@ -338,6 +338,20 @@ class FeatureExtractor:
                 if self.postprocess_fn is not None:
                     features_val = self.postprocess_fn(features_val)
 
+                # Safety net: if features are still high-dimensional (>2D), force global average pool
+                if isinstance(features_val, torch.Tensor) and features_val.ndim > 2:
+                    print(f"  [WARNING] Features still {features_val.ndim}D after postprocess: "
+                          f"shape={features_val.shape}. Applying global average pooling.")
+                    # Squeeze any singleton dims first
+                    while features_val.ndim > 4:
+                        features_val = features_val.squeeze(1)
+                    if features_val.ndim == 4:
+                        features_val = torch.nn.functional.adaptive_avg_pool2d(
+                            features_val, (1, 1)
+                        ).flatten(1)
+                    elif features_val.ndim == 3:
+                        features_val = features_val.mean(dim=1)
+
                 if not isinstance(features_val, torch.Tensor):
                     features_val = torch.from_numpy(
                         features_val).to(self.device)
