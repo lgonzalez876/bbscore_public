@@ -335,6 +335,8 @@ class NSDAssembly(BaseDataset):
                 ),
                 axis=2,
             )
+            del self.data[subj]
+
             test_brain_data_cat = np.mean(test_brain_data_cat, axis=1)
 
             subj_test_fmri_data, subj_test_ncsnr = self._get_data_dict(
@@ -343,6 +345,7 @@ class NSDAssembly(BaseDataset):
                 nsdgeneral_metadata_df,
                 regions,
             )
+            del test_brain_data_cat
 
             all_responses.append(subj_test_fmri_data)
             all_ncsnr.append(subj_test_ncsnr)
