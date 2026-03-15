@@ -169,10 +169,6 @@ class BenchmarkScore:
             else:
                 features_test = None
 
-        rss, avail, total = get_mem_info()
-        print(f"[MEM] _process_single_layer START: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
-        print(f"  features_train: shape={features_train.shape}, size={features_train.nbytes / 2**20:.1f} MB")
-
         stratify_labels_train = None
         if self.assembly_class:
             assembly = self.assembly_class()
@@ -190,11 +186,6 @@ class BenchmarkScore:
                 print(f"Error calling get_assembly for training: {e}")
                 raise
 
-            rss, avail, total = get_mem_info()
-            print(f"[MEM] After assembly loading: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
-            print(f"  target_train: shape={target_train.shape}, dtype={target_train.dtype}, "
-                  f"size={target_train.nbytes / 2**20:.1f} MB")
-
             if self.stimulus_test is not None:
                 target_test, _ = assembly.get_assembly(
                     **self.assembly_test_kwargs)
@@ -205,9 +196,6 @@ class BenchmarkScore:
             target_test = labels_test
             ceiling = None
             stratify_labels_train = None
-
-        rss, avail, total = get_mem_info()
-        print(f"[MEM] Before metrics: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
 
         results = {}
         n_metrics = len(self.metrics)
@@ -279,9 +267,6 @@ class BenchmarkScore:
         return results, ceiling
 
     def run(self):
-        rss, avail, total = get_mem_info()
-        print(f"[MEM] run() START: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
-
         # --- Memory Estimation (Warmup) ---
         ridge_metrics_present = any(
             'ridge' in name.lower() for name in self.metrics)
@@ -366,14 +351,6 @@ class BenchmarkScore:
         features_train_raw, labels_train = self.extractor.extract_features(
             self.stimulus_train, downsample_factor)
 
-        rss, avail, total = get_mem_info()
-        print(f"[MEM] After feature extraction: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
-        if isinstance(features_train_raw, dict):
-            for k, v in features_train_raw.items():
-                print(f"  features['{k}']: shape={v.shape}, dtype={v.dtype}, size={v.nbytes / 2**20:.1f} MB")
-        else:
-            print(f"  features: shape={features_train_raw.shape}, size={features_train_raw.nbytes / 2**20:.1f} MB")
-
         features_test_raw, labels_test = None, None
         if self.stimulus_test is not None:
             features_test_raw, labels_test = self.extractor.extract_features(
@@ -392,9 +369,6 @@ class BenchmarkScore:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-        rss, avail, total = get_mem_info()
-        print(f"[MEM] After model cleanup: RSS={rss:.2f} GB, avail={avail:.2f}/{total:.2f} GB")
 
         all_results = {}
 

@@ -73,8 +73,6 @@ class StableDiffusion:
 
     def postprocess_fn(self, features):
         """Pool spatial dims: (B, [1,] C, H, W) -> (B, C) via global average pooling."""
-        print(f"  [POSTPROCESS] input: ndim={features.ndim}, shape={features.shape}, dtype={features.dtype}")
-
         # Squeeze all singleton dims between batch (dim 0) and the last 3 dims (C, H, W).
         # e.g. (1, 1, 1, 320, 64, 64) -> (1, 320, 64, 64)
         while features.ndim > 4 and features.shape[1] == 1:
@@ -89,11 +87,7 @@ class StableDiffusion:
 
         # Safety net: if still > 2D after above checks, force pool
         if features.ndim > 2:
-            print(f"  [POSTPROCESS] WARNING: still {features.ndim}D after standard pooling, "
-                  f"shape={features.shape}. Force-pooling.")
-            # Preserve batch dim (dim 0), merge everything else, then pool last 2
             batch = features.shape[0]
             features = features.reshape(batch, -1)
 
-        print(f"  [POSTPROCESS] output: ndim={features.ndim}, shape={features.shape}")
         return features
