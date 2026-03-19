@@ -42,7 +42,6 @@ def run_kfold_cv(
     random_state: int = 42,
     stratify_on: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
-
     if stratify_on is not None:
         if len(stratify_on) != X.shape[0]:
             raise ValueError(
@@ -61,13 +60,14 @@ def run_kfold_cv(
     # scores['gt'] = []
 
     # Wrap the fold loop with tqdm progress bar
-    for train_idx, val_idx in tqdm(split_iterator, total=n_splits, desc="Folds"):
+    for fold_idx, (train_idx, val_idx) in enumerate(tqdm(split_iterator, total=n_splits, desc="Folds")):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
 
         model = model_factory()
         if model is not None:  # for metrics like onetoone that don't use any model
             model.fit(X_train, y_train)
+
             fold_preds = model.predict(X_val)
             # If fold_preds is a torch.Tensor, convert to numpy array
             if hasattr(fold_preds, 'cpu'):
@@ -88,6 +88,9 @@ def run_kfold_cv(
                 scores[name].append(fold_score)
             else:
                 scores[name].append(np.array(scoring_func(y_val, fold_preds)))
+
+        # Free model after each fold to avoid accumulation
+        del model
 
     return {name: np.array(score_list, dtype=object) for name, score_list in scores.items()}
 

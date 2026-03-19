@@ -441,6 +441,10 @@ class FeatureExtractor:
                 batch_labels = _process_labels(labels)
                 all_labels.extend(batch_labels)
 
+            # Free GPU cache after each batch to reduce fragmentation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         try:
             dataloader = DataLoader(
                 dataset,

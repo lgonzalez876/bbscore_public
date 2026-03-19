@@ -356,6 +356,20 @@ class BenchmarkScore:
             features_test_raw, labels_test = self.extractor.extract_features(
                 self.stimulus_test, downsample_factor, self.test_batch_size)
 
+        # Free model memory before running metrics
+        del self.extractor
+        del self.model
+        del self.model_instance
+        if hasattr(self, 'stimulus_train') and hasattr(self.stimulus_train, 'test_image_data'):
+            del self.stimulus_train.test_image_data
+        if hasattr(self, 'stimulus_test') and self.stimulus_test is not None:
+            if hasattr(self.stimulus_test, 'test_image_data'):
+                del self.stimulus_test.test_image_data
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         all_results = {}
 
         # CASE 1: Aggregated (Concatenate or Stack)
