@@ -49,6 +49,10 @@ decord2
 librosa
 soundfile
 
+# Diffusion models
+diffusers>=0.25.0
+accelerate>=0.25.0
+
 # Deep learning utilities
 pytorch-lightning
 geotorch
