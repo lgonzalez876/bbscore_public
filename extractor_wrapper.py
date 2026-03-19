@@ -113,7 +113,14 @@ class FeatureExtractor:
         def hook_fn_factory(layer_id):
             """Creates a hook specific to a layer name."""
             def hook_fn(module, input, output):
-                self.features[layer_id].append(output)
+                # Handle HuggingFace/diffusers model outputs (dataclasses)
+                if hasattr(output, 'sample'):
+                    output = output.sample
+                elif hasattr(output, 'last_hidden_state'):
+                    output = output.last_hidden_state
+                elif isinstance(output, tuple):
+                    output = output[0]
+                self.features[layer_id].append(output.detach())
             return hook_fn
 
         for l_name in self.layer_names:
@@ -330,6 +337,20 @@ class FeatureExtractor:
                 # Postprocess (Flatten spatial dims usually)
                 if self.postprocess_fn is not None:
                     features_val = self.postprocess_fn(features_val)
+
+                # Safety net: if features are still high-dimensional (>2D), force global average pool
+                if isinstance(features_val, torch.Tensor) and features_val.ndim > 2:
+                    print(f"  [WARNING] Features still {features_val.ndim}D after postprocess: "
+                          f"shape={features_val.shape}. Applying global average pooling.")
+                    # Squeeze any singleton dims first
+                    while features_val.ndim > 4:
+                        features_val = features_val.squeeze(1)
+                    if features_val.ndim == 4:
+                        features_val = torch.nn.functional.adaptive_avg_pool2d(
+                            features_val, (1, 1)
+                        ).flatten(1)
+                    elif features_val.ndim == 3:
+                        features_val = features_val.mean(dim=1)
 
                 if not isinstance(features_val, torch.Tensor):
                     features_val = torch.from_numpy(
